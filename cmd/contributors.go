@@ -3,13 +3,9 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"gitstats/internals/gitutils"
 	"os"
-	"os/exec"
-	"runtime"
 	"sort"
-	"strconv"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -20,19 +16,10 @@ type Contributor struct {
 	Commits      int
 	FirstCommit  time.Time
 	LatestCommit time.Time
-	LinesAdded   int
-	LinesRemoved int
-}
-
-type CommitInfo struct {
-	Name      string
-	Timestamp time.Time
-	Added     int
-	Removed   int
 }
 
 func GetContributorsCmd() *cobra.Command {
-		return &cobra.Command{
+	return &cobra.Command{
 		Use:   "contributors [path_to_repo]",
 		Short: "Show contributor statistics",
 		Long:  `Display a bar graph of contributor statistics and allow detailed view of individual contributors.`,
@@ -43,13 +30,13 @@ func GetContributorsCmd() *cobra.Command {
 
 func runContributors(cmd *cobra.Command, args []string) {
 	repoPath := args[0]
-	logEntries, err := getGitLog(repoPath)
+	commits, err := gitutils.GetGitLog(repoPath)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	contributors := processGitLog(logEntries)
+	contributors := processCommits(commits)
 	printBarGraph(contributors)
 
 	fmt.Println("\nEnter the number of a contributor to see more details, or 'q' to quit:")
@@ -70,94 +57,38 @@ func runContributors(cmd *cobra.Command, args []string) {
 	}
 }
 
-func getGitLog(repoPath string) ([]string, error) {
-	cmd := exec.Command("git", "-C", repoPath, "log", "--format=%an|%at", "--numstat")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("error accessing git repository: %v", err)
-	}
-	return strings.Split(string(output), "\n"), nil
-}
+func processCommits(commits []gitutils.CommitInfo) []Contributor {
+	contributorMap := make(map[string]*Contributor)
 
-func processLogEntry(entry string, commitChan chan<- CommitInfo) {
-	if strings.Contains(entry, "|") {
-		parts := strings.Split(entry, "|")
-		name, timestampStr := parts[0], parts[1]
-		timestamp, err := strconv.ParseInt(strings.TrimSpace(timestampStr), 10, 64)
-		if err != nil {
-			fmt.Printf("Error parsing timestamp for %s: %v\n", name, err)
-			return
-		}
-		commitTime := time.Unix(timestamp, 0)
-		commitChan <- CommitInfo{Name: name, Timestamp: commitTime}
-	} else if len(entry) > 0 {
-		parts := strings.Fields(entry)
-		if len(parts) == 3 {
-			added, _ := strconv.Atoi(parts[0])
-			removed, _ := strconv.Atoi(parts[1])
-			commitChan <- CommitInfo{Added: added, Removed: removed}
-		}
-	}
-}
-
-func processGitLog(logEntries []string) []Contributor {
-	numWorkers := runtime.NumCPU()
-	commitChan := make(chan CommitInfo, len(logEntries))
-	var wg sync.WaitGroup
-
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for _, entry := range logEntries {
-				processLogEntry(entry, commitChan)
+	for _, commit := range commits {
+		if contributor, exists := contributorMap[commit.Author]; exists {
+			contributor.Commits++
+			if commit.Timestamp.Before(contributor.FirstCommit) {
+				contributor.FirstCommit = commit.Timestamp
 			}
-		}()
-	}
-
-	go func() {
-		wg.Wait()
-		close(commitChan)
-	}()
-
-	contributors := make(map[string]*Contributor)
-	var currentContributor *Contributor
-
-	for commit := range commitChan {
-		if commit.Name != "" {
-			if contributor, exists := contributors[commit.Name]; exists {
-				currentContributor = contributor
-				currentContributor.Commits++
-				if commit.Timestamp.Before(contributor.FirstCommit) {
-					contributor.FirstCommit = commit.Timestamp
-				}
-				if commit.Timestamp.After(contributor.LatestCommit) {
-					contributor.LatestCommit = commit.Timestamp
-				}
-			} else {
-				currentContributor = &Contributor{
-					Name:         commit.Name,
-					Commits:      1,
-					FirstCommit:  commit.Timestamp,
-					LatestCommit: commit.Timestamp,
-				}
-				contributors[commit.Name] = currentContributor
+			if commit.Timestamp.After(contributor.LatestCommit) {
+				contributor.LatestCommit = commit.Timestamp
 			}
-		} else if currentContributor != nil {
-			currentContributor.LinesAdded += commit.Added
-			currentContributor.LinesRemoved += commit.Removed
+		} else {
+			contributorMap[commit.Author] = &Contributor{
+				Name:         commit.Author,
+				Commits:      1,
+				FirstCommit:  commit.Timestamp,
+				LatestCommit: commit.Timestamp,
+			}
 		}
 	}
 
-	result := make([]Contributor, 0, len(contributors))
-	for _, c := range contributors {
-		result = append(result, *c)
+	contributors := make([]Contributor, 0, len(contributorMap))
+	for _, c := range contributorMap {
+		contributors = append(contributors, *c)
 	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Commits > result[j].Commits
+
+	sort.Slice(contributors, func(i, j int) bool {
+		return contributors[i].Commits > contributors[j].Commits
 	})
 
-	return result
+	return contributors
 }
 
 func printColoredBar(length int, color string) {
@@ -196,7 +127,4 @@ func displayContributorDetails(contributor Contributor) {
 	fmt.Printf("Total Commits: %d\n", contributor.Commits)
 	fmt.Printf("First Commit: %s\n", contributor.FirstCommit.Format("2006-01-02 15:04:05"))
 	fmt.Printf("Latest Commit: %s\n", contributor.LatestCommit.Format("2006-01-02 15:04:05"))
-	fmt.Printf("Lines Added: %d\n", contributor.LinesAdded)
-	fmt.Printf("Lines Removed: %d\n", contributor.LinesRemoved)
-	fmt.Printf("Net Lines: %d\n", contributor.LinesAdded-contributor.LinesRemoved)
 }

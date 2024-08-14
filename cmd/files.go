@@ -2,10 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"gitstats/internals/gitutils"
 	"os"
-	"os/exec"
 	"sort"
-	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -32,7 +31,7 @@ func runFiles(cmd *cobra.Command, args []string) {
 	repoPath := args[0]
 	ignoreSubstrings, _ := cmd.Flags().GetStringSlice("ignore")
 
-	fileChanges, err := getFileChanges(repoPath, ignoreSubstrings)
+	fileChanges, err := gitutils.GetFileChanges(repoPath, ignoreSubstrings)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
@@ -40,34 +39,6 @@ func runFiles(cmd *cobra.Command, args []string) {
 
 	sortedFileChanges := sortFileChanges(fileChanges)
 	printFileChangeChart(sortedFileChanges)
-}
-
-func getFileChanges(repoPath string, ignoreSubstrings []string) (map[string]int, error) {
-	cmd := exec.Command("git", "-C", repoPath, "log", "--name-only", "--pretty=format:")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("error accessing git repository: %v", err)
-	}
-
-	fileChanges := make(map[string]int)
-	files := strings.Split(strings.TrimSpace(string(output)), "\n")
-
-	for _, file := range files {
-		if file != "" && !shouldIgnore(file, ignoreSubstrings) {
-			fileChanges[file]++
-		}
-	}
-
-	return fileChanges, nil
-}
-
-func shouldIgnore(file string, ignoreSubstrings []string) bool {
-	for _, substr := range ignoreSubstrings {
-		if substr != "" && strings.Contains(file, substr) {
-			return true
-		}
-	}
-	return false
 }
 
 func sortFileChanges(fileChanges map[string]int) []FileChange {
@@ -109,7 +80,7 @@ func printFileChangeChart(fileChanges []FileChange) {
 			barLength = (fc.ChangeCount * 50) / maxCount
 		}
 		colorIndex := i % len(colors)
-		
+
 		fmt.Printf("%2d. %-*s |", i+1, maxNameLength, fc.Name)
 		fmt.Print(colors[colorIndex])
 		for j := 0; j < barLength; j++ {
